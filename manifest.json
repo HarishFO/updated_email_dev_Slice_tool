@@ -7,12 +7,7 @@
   "editorType": ["figma"],
   "networkAccess": {
     "allowedDomains": [
-      "https://email-dev-tool-production.up.railway.app",
-      "http://localhost:3000"
-    ],
-    "devAllowedDomains": [
-      "https://email-dev-tool-production.up.railway.app",
-      "http://localhost:3000"
+      "https://updatedemaildevslicetool-production.up.railway.app"
     ]
   }
 }
