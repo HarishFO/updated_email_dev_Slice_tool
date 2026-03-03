@@ -31,7 +31,7 @@
     .empty { color: var(--opt-muted-ink); text-align: center; padding: 24px 8px; border: 1px solid var(--opt-border); border-radius: 8px; background: var(--opt-surface); }
     .toolbar { position: sticky; top: 0; background: var(--opt-surface); z-index: 10; border: 1px solid var(--opt-border); border-radius: 8px; padding: 8px; margin-bottom: 10px; }
     .layout { display: grid; grid-template-columns: 1fr 230px; gap: 10px; align-items: start; }
-    .preview-wrap { position: relative; border: 1px solid var(--opt-border); border-radius: 8px; overflow: hidden; background: var(--opt-surface); line-height: 0; }
+    .preview-wrap { position: relative; border: 0; border-radius: 0; overflow: hidden; background: transparent; line-height: 0; }
     #previewImg { display: block; width: 100%; height: auto; user-select: none; pointer-events: none; }
     #overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; touch-action: none; }
     .tiny { color: var(--opt-muted-ink); font-size: 11px; margin-top: 4px; }
@@ -59,6 +59,7 @@
     var draw = { active: false, startX: 0, startY: 0, currentX: 0, currentY: 0, pointerId: null };
     var resize = { active: false, handle: null, startRect: null, pointerId: null };
     var move = { active: false, pointerId: null, lastLogicalX: 0, lastLogicalY: 0 };
+    var guides = [];
     var teardown = null;
     var MIN_SLICE = 10, HANDLE_R = 6, HANDLE_HIT = 12;
     var EMAIL_FULL_WIDTH = false;
@@ -277,6 +278,26 @@
     }
 
     function reset() { state.preview = { ready: false, base64: '', width: 0, height: 0 }; state.slices = []; state.selectedSliceIndex = -1; state.addSliceMode = false; }
+
+    function collectGuides(rect, exclude) {
+      var out = [];
+      var threshold = 5;
+      var cx = rect.x + rect.width / 2;
+      var cy = rect.y + rect.height / 2;
+      for (var i = 0; i < state.slices.length; i++) {
+        if (i === exclude) continue;
+        var o = state.slices[i].rect;
+        var ocx = o.x + o.width / 2;
+        var ocy = o.y + o.height / 2;
+        if (Math.abs(rect.x - o.x) <= threshold) out.push({ type: 'v', at: o.x, label: 'L align' });
+        if (Math.abs((rect.x + rect.width) - (o.x + o.width)) <= threshold) out.push({ type: 'v', at: o.x + o.width, label: 'R align' });
+        if (Math.abs(cx - ocx) <= threshold) out.push({ type: 'v', at: ocx, label: 'Center X' });
+        if (Math.abs(rect.y - o.y) <= threshold) out.push({ type: 'h', at: o.y, label: 'Top align' });
+        if (Math.abs((rect.y + rect.height) - (o.y + o.height)) <= threshold) out.push({ type: 'h', at: o.y + o.height, label: 'Bottom align' });
+        if (Math.abs(cy - ocy) <= threshold) out.push({ type: 'h', at: ocy, label: 'Center Y' });
+      }
+      return out;
+    }
     function getAcctHtml() {
       var list = state.availableAccounts.slice();
       if (!list.length) {
@@ -361,8 +382,25 @@
       e = document.getElementById('addSliceBtn'); if (e) e.onclick = function() { state.addSliceMode = !state.addSliceMode; render(); };
       e = document.getElementById('clearBtn'); if (e) e.onclick = function() { state.slices = []; state.selectedSliceIndex = -1; state.addSliceMode = false; render(); };
       var items = document.querySelectorAll('.slice-item'); for (var i = 0; i < items.length; i++) items[i].onclick = function(ev) { state.selectedSliceIndex = Number(ev.currentTarget.getAttribute('data-idx')); render(); };
-      function updateInputs() { var s = getSelected(); if (!s) return; var nr = { x: Number(document.getElementById('sliceX').value), y: Number(document.getElementById('sliceY').value), width: Number(document.getElementById('sliceW').value), height: Number(document.getElementById('sliceH').value) }; if (EMAIL_FULL_WIDTH) nr = { x: 0, y: nr.y, width: state.preview.width, height: nr.height }; s.rect = constrain(nr, state.selectedSliceIndex, s.rect); render(); }
-      ['sliceX','sliceY','sliceW','sliceH'].forEach(function(id) { e = document.getElementById(id); if (e) e.onchange = updateInputs; });
+      function updateInputs(changedId) {
+        var s = getSelected(); if (!s) return;
+        var nr = { x: Number(document.getElementById('sliceX').value), y: Number(document.getElementById('sliceY').value), width: Number(document.getElementById('sliceW').value), height: Number(document.getElementById('sliceH').value) };
+        if (changedId === 'sliceW' && state.preview.ready) {
+          if (nr.width >= state.preview.width - 2) {
+            nr.x = 0;
+            nr.width = state.preview.width;
+          } else if (nr.x + nr.width > state.preview.width) {
+            nr.x = Math.max(0, state.preview.width - nr.width);
+          }
+        }
+        if (changedId === 'sliceH' && state.preview.ready) {
+          if (nr.y + nr.height > state.preview.height) nr.y = Math.max(0, state.preview.height - nr.height);
+        }
+        if (EMAIL_FULL_WIDTH) nr = { x: 0, y: nr.y, width: state.preview.width, height: nr.height };
+        s.rect = constrain(nr, state.selectedSliceIndex, s.rect);
+        render();
+      }
+      ['sliceX','sliceY','sliceW','sliceH'].forEach(function(id) { e = document.getElementById(id); if (e) e.onchange = function() { updateInputs(id); }; });
       e = document.getElementById('cloneBtn'); if (e) e.onclick = cloneSlice;
       e = document.getElementById('removeBtn'); if (e) e.onclick = function() { if (state.selectedSliceIndex < 0) return; state.slices.splice(state.selectedSliceIndex, 1); state.selectedSliceIndex = state.slices.length ? Math.min(state.selectedSliceIndex, state.slices.length - 1) : -1; render(); };
       e = document.getElementById('clearAllBtn'); if (e) e.onclick = function() { state.slices = []; state.selectedSliceIndex = -1; render(); };
@@ -398,6 +436,32 @@
           if (act) { var hs = getH(state.slices[i]); for (var j = 0; j < hs.length; j++) { ctx.beginPath(); ctx.arc(hs[j].x, hs[j].y, HANDLE_R, 0, Math.PI * 2); ctx.fillStyle = '#fff'; ctx.fill(); ctx.strokeStyle = '#f59e0b'; ctx.lineWidth = 2; ctx.stroke(); } }
         }
         if (draw.active) { var x = Math.min(draw.startX, draw.currentX), y = Math.min(draw.startY, draw.currentY), w = Math.abs(draw.currentX - draw.startX), h = Math.abs(draw.currentY - draw.startY); ctx.fillStyle = 'rgba(16,185,129,0.25)'; ctx.fillRect(x, y, w, h); ctx.setLineDash([4,4]); ctx.strokeStyle = '#10b981'; ctx.lineWidth = 2; ctx.strokeRect(x, y, w, h); ctx.setLineDash([]); }
+        if (guides.length) {
+          ctx.save();
+          ctx.setLineDash([6, 4]);
+          ctx.strokeStyle = '#06b6d4';
+          ctx.fillStyle = '#0e7490';
+          ctx.font = 'bold 10px Inter, sans-serif';
+          for (var g = 0; g < guides.length; g++) {
+            var gd = guides[g];
+            if (gd.type === 'v') {
+              var gx = gd.at * scaleX;
+              ctx.beginPath();
+              ctx.moveTo(gx, 0);
+              ctx.lineTo(gx, canvas.height);
+              ctx.stroke();
+              ctx.fillText(gd.label, gx + 4, 12 + (g % 3) * 12);
+            } else {
+              var gy = gd.at * scaleY;
+              ctx.beginPath();
+              ctx.moveTo(0, gy);
+              ctx.lineTo(canvas.width, gy);
+              ctx.stroke();
+              ctx.fillText(gd.label, 4, gy - 4);
+            }
+          }
+          ctx.restore();
+        }
       }
       function upCur(cp) { if (state.addSliceMode) { canvas.style.cursor = 'crosshair'; return; } var h = findH(cp); if (h) { canvas.style.cursor = h.c; return; } var lp = toL(cp.x, cp.y), idx = hit(lp.x, lp.y); canvas.style.cursor = (idx >= 0 && idx === state.selectedSliceIndex) ? 'move' : (idx >= 0 ? 'pointer' : 'default'); }
       canvas.onpointerdown = function(ev) {
@@ -422,6 +486,7 @@
           }
           var prevRect = state.slices[state.selectedSliceIndex].rect;
           state.slices[state.selectedSliceIndex].rect = resizeRect(sr, resize.handle, nr, state.selectedSliceIndex, prevRect);
+          guides = collectGuides(state.slices[state.selectedSliceIndex].rect, state.selectedSliceIndex);
           redraw(); return;
         }
         if (move.active && state.selectedSliceIndex >= 0) {
@@ -430,6 +495,7 @@
           var dy = lp.y - move.lastLogicalY;
           var cur = state.slices[state.selectedSliceIndex].rect;
           state.slices[state.selectedSliceIndex].rect = moveRect(cur, cur.x + dx, cur.y + dy, state.selectedSliceIndex);
+          guides = collectGuides(state.slices[state.selectedSliceIndex].rect, state.selectedSliceIndex);
           move.lastLogicalX = lp.x;
           move.lastLogicalY = lp.y;
           redraw();
@@ -438,8 +504,8 @@
         if (draw.active) { draw.currentX = cp.x; draw.currentY = cp.y; redraw(); }
       };
       canvas.onpointerup = function(ev) {
-        if (move.active) { try { canvas.releasePointerCapture(move.pointerId); } catch(e) {} move.active = false; render(); return; }
-        if (resize.active) { try { canvas.releasePointerCapture(resize.pointerId); } catch(e) {} resize.active = false; render(); return; }
+        if (move.active) { try { canvas.releasePointerCapture(move.pointerId); } catch(e) {} move.active = false; guides = []; render(); return; }
+        if (resize.active) { try { canvas.releasePointerCapture(resize.pointerId); } catch(e) {} resize.active = false; guides = []; render(); return; }
         if (draw.active) {
           var cp = getP(ev); draw.currentX = cp.x; draw.currentY = cp.y;
           try { canvas.releasePointerCapture(draw.pointerId); } catch(e) {} draw.active = false;
@@ -451,71 +517,5 @@
           } else redraw();
         }
       };
-      canvas.onpointercancel = function() { move.active = resize.active = draw.active = false; redraw(); };
+      canvas.onpointercancel = function() { move.active = resize.active = draw.active = false; guides = []; redraw(); };
       if (teardown) teardown();
-      function onDoc(ev) { var wrap = document.getElementById('previewWrap'), side = document.querySelector('.side'); if (wrap && wrap.contains(ev.target)) return; if (side && side.contains(ev.target)) return; if (state.addSliceMode || state.selectedSliceIndex !== -1) { state.addSliceMode = false; state.selectedSliceIndex = -1; render(); } }
-      document.addEventListener('pointerdown', onDoc, true);
-      teardown = function() { document.removeEventListener('pointerdown', onDoc, true); };
-      redraw();
-    }
-
-    function testConn() {
-      var base = normalizeBackendUrl(state.backendUrl);
-      if (!base) return setStatus('Enter backend URL first.', 'error');
-      state.backendUrl = base;
-      var url = base + '/health';
-      setStatus('Testing: ' + url, 'loading');
-      fetch(url, { mode: 'cors' }).then(function(r) { return r.ok ? r.json() : Promise.reject('HTTP ' + r.status); }).then(function(d) { setStatus('✓ Connected! ' + JSON.stringify(d), 'success'); }).catch(function(e) { var m = String(e.message || e); if (m.includes('fetch') || m.includes('network') || m.includes('Failed to fetch')) m = 'Network error. Check: 1) backend URL is correct HTTPS, 2) backend is deployed, 3) this domain is in manifest networkAccess.allowedDomains, 4) CORS is enabled in backend.'; setStatus('Connection failed: ' + m, 'error'); });
-    }
-
-    function loadAccounts(silent) {
-      var base = normalizeBackendUrl(state.backendUrl);
-      if (!base) { if (!silent) setStatus('Enter backend URL first.', 'error'); return; }
-      state.backendUrl = base;
-      var url = base + '/api/accounts';
-      if (!silent) setStatus('Loading accounts...', 'loading');
-      fetch(url, { mode: 'cors' }).then(function(r) { return r.ok ? r.json() : r.text().then(function(t) { throw new Error(t); }); }).then(function(j) {
-        var raw = Array.isArray(j.accounts) ? j.accounts : [];
-        state.availableAccounts = raw.map(function(a) { return typeof a === 'string' ? { id: a, name: a } : { id: String(a.id), name: String(a.name || a.id) }; });
-        state.accountsLoaded = true; state.accountsError = null;
-        if (state.availableAccounts.length && !state.availableAccounts.some(function(a) { return a.id === state.accountId; })) state.accountId = state.availableAccounts[0].id;
-        if (!silent) setStatus('✓ Loaded ' + state.availableAccounts.length + ' account(s)', 'success'); else render();
-      }).catch(function(e) { state.availableAccounts = []; state.accountsLoaded = false; var m = String(e.message || e); if (m.includes('fetch')) m = 'Network/CORS error. Add cors to backend.'; state.accountsError = m; if (!silent) setStatus('Failed: ' + m, 'error'); else render(); });
-    }
-
-    function pushViaBackend(data) {
-      var base = normalizeBackendUrl(state.backendUrl);
-      if (!base) return Promise.reject(new Error('Backend URL required.'));
-      state.backendUrl = base;
-      return fetch(base + '/api/push', { method: 'POST', mode: 'cors', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ accountId: state.accountId || 'default', batchName: state.batchName || data.name, imageBase64: data.base64, logicalWidth: data.logicalWidth, logicalHeight: data.logicalHeight, pixelRatio: data.pixelRatio, exportWidth: data.exportWidth, exportHeight: data.exportHeight, headerHeight: Number(state.headerHeight || 0), footerHeight: Number(state.footerHeight || 0), maxSliceHeight: Number(state.maxSliceHeight || 1200), manualSlices: data.manualSlices || [], frameName: data.name }) }).then(function(r) { return r.json().then(function(j) { if (!r.ok) throw new Error(j.error || 'Failed'); return j; }); });
-    }
-
-    function setStatus(m, t) { state.status = m; state.statusType = t; render(); }
-
-    window.onmessage = function(ev) {
-      var msg = ev.data.pluginMessage; if (!msg) return;
-      if (msg.type === 'update') {
-        state.frame = msg.frame || null;
-        state.errorMsg = msg.error || null;
-        state.locked = !!msg.locked;
-        var frameChanged = !!state.frame && state.frame.id !== lastFrameId;
-        if (state.frame && (batchNameAuto || frameChanged)) state.batchName = state.frame.name;
-        if (!state.frame) { reset(); batchNameAuto = true; lastFrameId = null; }
-        else lastFrameId = state.frame.id;
-        state.status = '';
-        state.statusType = '';
-        render();
-      }
-      if (msg.type === 'preview-error') setStatus(msg.message || 'Preview failed', 'error');
-      if (msg.type === 'suggest-error') setStatus(msg.message || 'Suggest failed', 'error');
-      if (msg.type === 'export-error') setStatus(msg.message || 'Export failed', 'error');
-      if (msg.type === 'preview-done') { state.preview.ready = true; state.preview.base64 = msg.base64; state.preview.width = msg.logicalWidth; state.preview.height = msg.logicalHeight; setStatus('Preview loaded.', 'success'); }
-      if (msg.type === 'suggest-done') { state.slices = Array.isArray(msg.slices) ? msg.slices : []; state.selectedSliceIndex = state.slices.length ? 0 : -1; state.addSliceMode = false; setStatus(state.slices.length + ' slice(s) suggested.', 'success'); }
-      if (msg.type === 'export-done') { setStatus('Uploading...', 'loading'); pushViaBackend(msg).then(function(r) { var orig = 0, comp = 0; r.slices.forEach(function(s) { orig += s.originalKb || 0; comp += s.compressedKb || 0; }); setStatus('✓ Uploaded ' + r.sliceCount + ' slice(s) | ' + Math.round(orig) + 'KB → ' + Math.round(comp) + 'KB', 'success'); parent.postMessage({ pluginMessage: { type: 'notify', message: 'Done!' } }, '*'); }).catch(function(e) { setStatus('Upload failed: ' + (e.message || e), 'error'); }); }
-    };
-
-    render();
-    setTimeout(function() { if (state.backendUrl) loadAccounts(true); }, 500);
-  </script>
-</body>
-</html>
