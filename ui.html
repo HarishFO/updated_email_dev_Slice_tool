@@ -61,7 +61,7 @@
     var move = { active: false, pointerId: null, lastLogicalX: 0, lastLogicalY: 0 };
     var teardown = null;
     var MIN_SLICE = 10, HANDLE_R = 6, HANDLE_HIT = 12;
-    var EMAIL_FULL_WIDTH = true;
+    var EMAIL_FULL_WIDTH = false;
 
     function esc(s) { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
     function clamp(n, lo, hi) { return Math.max(lo, Math.min(hi, n)); }
@@ -312,7 +312,7 @@
       html += '</div>';
       html += '<div class="row" style="margin-bottom:10px;"><button id="loadAccBtn" class="btn btn-muted">Load Accounts</button><button id="testBtn" class="btn btn-muted">Test Connection</button></div>';
       html += '<div class="row"><div class="field"><label>Header (px)</label><input id="headerInput" type="number" value="' + esc(state.headerHeight) + '" /></div><div class="field"><label>Footer (px)</label><input id="footerInput" type="number" value="' + esc(state.footerHeight) + '" /></div></div>';
-      html += '<div class="field"><label>Slice Height (fixed)</label><input id="sliceInput" type="number" value="300" readonly /></div>';
+      html += '<div class="field"><label>Max Slice Height</label><input id="sliceInput" type="number" value="' + esc(state.maxSliceHeight) + '" /></div>';
       html += '<div class="toolbar"><div class="row" style="margin-bottom:8px;"><button id="loadPreviewBtn" class="btn btn-muted">Load Preview</button><button id="autoBtn" class="btn btn-muted">Auto Suggest</button></div>';
       html += '<div class="row" style="margin-bottom:8px;"><button id="addSliceBtn" class="btn ' + (state.addSliceMode ? 'btn-active' : 'btn-muted') + '">' + (state.addSliceMode ? '✓ Drawing' : '+ Add Slice') + '</button><button id="clearBtn" class="btn btn-muted">Clear</button></div>';
       html += '<div class="row"><button id="refreshBtn2" class="btn btn-muted">Refresh</button><button id="pushBtn" class="btn btn-primary">Upload</button></div></div>';
