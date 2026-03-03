@@ -1,0 +1,329 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <style>
+    :root {
+      --opt-primary: #2563eb;
+      --opt-primary-hover: #1d4ed8;
+      --opt-ink: #0f172a;
+      --opt-muted-ink: #475569;
+      --opt-surface: #ffffff;
+      --opt-bg: #f8fafc;
+      --opt-border: #dbe3ef;
+      --opt-highlight: #dbeafe;
+    }
+    * { box-sizing: border-box; }
+    body { font-family: Inter, -apple-system, sans-serif; font-size: 12px; margin: 0; padding: 14px; background: var(--opt-bg); color: var(--opt-ink); }
+    h1 { margin: 0 0 12px; padding-bottom: 10px; border-bottom: 1px solid var(--opt-border); font-size: 14px; font-weight: 700; }
+    .card { background: #eef3ff; border-radius: 8px; padding: 10px; margin-bottom: 10px; border: 1px solid var(--opt-border); }
+    .name { font-weight: 700; }
+    .muted { color: var(--opt-muted-ink); margin-top: 4px; }
+    .field { margin-bottom: 10px; }
+    .field label { display: block; margin-bottom: 4px; font-weight: 600; }
+    input, select { width: 100%; border: 1px solid var(--opt-border); border-radius: 6px; padding: 8px; font-size: 12px; background: var(--opt-surface); }
+    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .row-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; }
+    .btn { width: 100%; border: 0; border-radius: 8px; padding: 10px; cursor: pointer; font-weight: 700; font-size: 12px; }
+    .btn-muted { background: #e2e8f0; color: var(--opt-ink); }
+    .btn-primary { background: var(--opt-primary); color: #fff; }
+    .btn-active { background: #0f766e; color: #fff; }
+    .empty { color: var(--opt-muted-ink); text-align: center; padding: 24px 8px; border: 1px solid var(--opt-border); border-radius: 8px; background: var(--opt-surface); }
+    .toolbar { position: sticky; top: 0; background: var(--opt-surface); z-index: 10; border: 1px solid var(--opt-border); border-radius: 8px; padding: 8px; margin-bottom: 10px; }
+    .layout { display: grid; grid-template-columns: 1fr 230px; gap: 10px; align-items: start; }
+    .preview-wrap { position: relative; border: 1px solid var(--opt-border); border-radius: 8px; overflow: hidden; background: var(--opt-surface); line-height: 0; }
+    #previewImg { display: block; width: 100%; height: auto; user-select: none; pointer-events: none; }
+    #overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; touch-action: none; }
+    .tiny { color: var(--opt-muted-ink); font-size: 11px; margin-top: 4px; }
+    .side { border: 1px solid var(--opt-border); border-radius: 8px; background: var(--opt-surface); padding: 8px; position: sticky; top: 62px; }
+    .side-title { font-weight: 700; margin-bottom: 8px; }
+    .slice-list { max-height: 220px; overflow: auto; border: 1px solid var(--opt-border); border-radius: 8px; padding: 6px; margin-bottom: 8px; }
+    .slice-item { border: 1px solid var(--opt-border); border-radius: 6px; padding: 6px 8px; margin-bottom: 6px; cursor: pointer; background: var(--opt-surface); }
+    .slice-item:last-child { margin-bottom: 0; }
+    .slice-item.active { border-color: var(--opt-primary); background: var(--opt-highlight); }
+    .msg { margin-top: 10px; padding: 10px; border-radius: 8px; font-weight: 500; }
+    .loading { background: var(--opt-highlight); color: var(--opt-primary-hover); }
+    .success { background: #dcfce7; color: #166534; }
+    .error { background: #fee2e2; color: #991b1b; }
+    .divider { height: 1px; background: var(--opt-border); margin: 10px 0; }
+  </style>
+</head>
+<body>
+  <h1>📧 Optimite Figma to Klaviyo</h1>
+  <div id="app"></div>
+  <script>
+    var state = { frame: null, locked: false, errorMsg: null, batchName: '', backendUrl: '', accountId: 'default', availableAccounts: [], accountsLoaded: false, accountsError: null, headerHeight: '0', footerHeight: '0', maxSliceHeight: '0', preview: { ready: false, base64: '', width: 0, height: 0 }, slices: [], selectedSliceIndex: -1, addSliceMode: false, status: '', statusType: '' };
+    var draw = { active: false, startX: 0, startY: 0, currentX: 0, currentY: 0, pointerId: null };
+    var resize = { active: false, handle: null, startRect: null, pointerId: null };
+    var move = { active: false, pointerId: null, lastLogicalX: 0, lastLogicalY: 0 };
+    var teardown = null;
+    var MIN_SLICE = 10, HANDLE_R = 6, HANDLE_HIT = 12;
+
+    function esc(s) { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+    function clamp(n, lo, hi) { return Math.max(lo, Math.min(hi, n)); }
+    function getSelected() { return (state.selectedSliceIndex >= 0 && state.selectedSliceIndex < state.slices.length) ? state.slices[state.selectedSliceIndex] : null; }
+
+    function rectsOverlap(a, b) { return a.x < b.x + b.width && a.x + a.width > b.x && a.y < b.y + b.height && a.y + a.height > b.y; }
+    function wouldOverlap(rect, exclude) { for (var i = 0; i < state.slices.length; i++) { if (i === exclude) continue; if (rectsOverlap(rect, state.slices[i].rect)) return true; } return false; }
+
+    function normalize(r) {
+      if (!state.preview.ready) return r;
+      var pw = state.preview.width, ph = state.preview.height;
+      var x = Math.round(clamp(Number(r.x)||0, 0, pw - MIN_SLICE));
+      var y = Math.round(clamp(Number(r.y)||0, 0, ph - MIN_SLICE));
+      var w = Math.round(clamp(Number(r.width)||MIN_SLICE, MIN_SLICE, pw - x));
+      var h = Math.round(clamp(Number(r.height)||MIN_SLICE, MIN_SLICE, ph - y));
+      return { x: x, y: y, width: w, height: h };
+    }
+
+    function constrain(newRect, exclude, fallback) {
+      var r = normalize(newRect);
+      if (!wouldOverlap(r, exclude)) return r;
+      return fallback ? normalize(fallback) : r;
+    }
+
+    function moveRect(rect, nx, ny, exclude) {
+      var c = normalize({ x: nx, y: ny, width: rect.width, height: rect.height });
+      if (!wouldOverlap(c, exclude)) return c;
+      return rect;
+    }
+
+    function findFreePos(src) {
+      var pw = state.preview.width, ph = state.preview.height;
+      var positions = [
+        { x: src.x, y: src.y + src.height + 10 },
+        { x: src.x, y: src.y - src.height - 10 },
+        { x: src.x + src.width + 10, y: src.y },
+        { x: src.x - src.width - 10, y: src.y }
+      ];
+      for (var i = 0; i < positions.length; i++) {
+        var c = normalize({ x: positions[i].x, y: positions[i].y, width: src.width, height: src.height });
+        if (!wouldOverlap(c, -1)) return c;
+      }
+      for (var y = 0; y < ph - src.height; y += 50) {
+        for (var x = 0; x < pw - src.width; x += 50) {
+          var c = normalize({ x: x, y: y, width: src.width, height: src.height });
+          if (!wouldOverlap(c, -1)) return c;
+        }
+      }
+      return normalize({ x: src.x + 30, y: src.y + 30, width: src.width, height: src.height });
+    }
+
+    function cloneSlice() {
+      var s = getSelected(); if (!s) return;
+      state.slices.push({ rect: findFreePos(s.rect), url: '', label: '', alt: '' });
+      state.selectedSliceIndex = state.slices.length - 1;
+      render();
+    }
+
+    function reset() { state.preview = { ready: false, base64: '', width: 0, height: 0 }; state.slices = []; state.selectedSliceIndex = -1; state.addSliceMode = false; }
+    function getAcctHtml() { var h = ''; for (var i = 0; i < state.availableAccounts.length; i++) { var a = state.availableAccounts[i]; h += '<option value="' + esc(a.id) + '"' + (a.id === state.accountId ? ' selected' : '') + '>' + esc(a.name) + '</option>'; } return h; }
+
+    function render() {
+      var app = document.getElementById('app'), html = '';
+      if (!state.frame) {
+        html += '<div class="empty">' + esc(state.errorMsg || 'Select one frame') + '</div>';
+        html += '<button id="refreshBtn" class="btn btn-muted" style="margin-top:8px;">Refresh</button>';
+        app.innerHTML = html;
+        document.getElementById('refreshBtn').onclick = function() { parent.postMessage({ pluginMessage: { type: 'refresh' } }, '*'); };
+        return;
+      }
+      html += '<div class="card"><div class="name">' + esc(state.frame.name) + '</div><div class="muted">' + state.frame.width + ' × ' + state.frame.height + ' px</div></div>';
+      html += '<div class="row" style="margin-bottom:10px;"><button id="lockBtn" class="btn btn-muted">🔒 Lock</button><button id="unlockBtn" class="btn btn-muted">🔓 Unlock</button></div>';
+      html += '<div class="field"><label>Batch Name</label><input id="batchInput" value="' + esc(state.batchName) + '" /></div>';
+      html += '<div class="field"><label>Backend URL</label><input id="backendInput" value="' + esc(state.backendUrl) + '" placeholder="https://your-app.up.railway.app" />';
+      if (!state.backendUrl) html += '<div class="tiny" style="color:#b45309;">⚠️ Enter Railway URL</div>';
+      html += '</div>';
+      html += '<div class="field"><label>Klaviyo Account</label>';
+      if (state.accountsLoaded && state.availableAccounts.length) html += '<select id="accountSelect">' + getAcctHtml() + '</select>';
+      else { html += '<input id="accountInput" value="' + esc(state.accountId) + '" />'; if (state.accountsError) html += '<div class="tiny" style="color:#dc2626;">' + esc(state.accountsError) + '</div>'; }
+      html += '</div>';
+      html += '<div class="row" style="margin-bottom:10px;"><button id="loadAccBtn" class="btn btn-muted">Load Accounts</button><button id="testBtn" class="btn btn-muted">Test Connection</button></div>';
+      html += '<div class="row"><div class="field"><label>Header (px)</label><input id="headerInput" type="number" value="' + esc(state.headerHeight) + '" /></div><div class="field"><label>Footer (px)</label><input id="footerInput" type="number" value="' + esc(state.footerHeight) + '" /></div></div>';
+      html += '<div class="field"><label>Max Slice Height</label><input id="sliceInput" type="number" value="' + esc(state.maxSliceHeight) + '" /></div>';
+      html += '<div class="toolbar"><div class="row" style="margin-bottom:8px;"><button id="loadPreviewBtn" class="btn btn-muted">Load Preview</button><button id="autoBtn" class="btn btn-muted">Auto Suggest</button></div>';
+      html += '<div class="row" style="margin-bottom:8px;"><button id="addSliceBtn" class="btn ' + (state.addSliceMode ? 'btn-active' : 'btn-muted') + '">' + (state.addSliceMode ? '✓ Drawing' : '+ Add Slice') + '</button><button id="clearBtn" class="btn btn-muted">Clear</button></div>';
+      html += '<div class="row"><button id="refreshBtn2" class="btn btn-muted">Refresh</button><button id="pushBtn" class="btn btn-primary">Upload</button></div></div>';
+      if (!state.preview.ready) html += '<div class="empty">Click Load Preview first</div>';
+      else {
+        html += '<div class="layout"><div><div class="preview-wrap" id="previewWrap"><img id="previewImg" src="data:image/png;base64,' + state.preview.base64 + '" /><canvas id="overlay"></canvas></div><div class="tiny">' + state.preview.width + ' × ' + state.preview.height + '</div></div>';
+        html += '<div class="side"><div class="side-title">Slices (' + state.slices.length + ')</div>';
+        if (!state.slices.length) html += '<div class="empty" style="padding:12px;">No slices</div>';
+        else {
+          html += '<div class="slice-list">';
+          for (var i = 0; i < state.slices.length; i++) { var sl = state.slices[i]; html += '<div class="slice-item' + (i === state.selectedSliceIndex ? ' active' : '') + '" data-idx="' + i + '"><b>Slice ' + (i+1) + '</b><br/><span class="tiny">x:' + sl.rect.x + ' y:' + sl.rect.y + ' w:' + sl.rect.width + ' h:' + sl.rect.height + '</span></div>'; }
+          html += '</div>';
+          var s = getSelected();
+          if (s) {
+            html += '<div class="divider"></div><div class="row"><div class="field"><label>X</label><input id="sliceX" type="number" value="' + s.rect.x + '" /></div><div class="field"><label>Y</label><input id="sliceY" type="number" value="' + s.rect.y + '" /></div></div>';
+            html += '<div class="row"><div class="field"><label>W</label><input id="sliceW" type="number" value="' + s.rect.width + '" /></div><div class="field"><label>H</label><input id="sliceH" type="number" value="' + s.rect.height + '" /></div></div>';
+          }
+          html += '<div class="row-3" style="margin-top:8px;"><button id="cloneBtn" class="btn btn-muted">Clone</button><button id="removeBtn" class="btn btn-muted">Remove</button><button id="clearAllBtn" class="btn btn-muted">Clear</button></div>';
+        }
+        html += '</div></div>';
+      }
+      if (state.status) html += '<div class="msg ' + state.statusType + '">' + esc(state.status) + '</div>';
+      app.innerHTML = html;
+      bind();
+      if (state.preview.ready) { var img = document.getElementById('previewImg'); if (img && img.complete) setupOverlay(); else if (img) img.onload = setupOverlay; }
+    }
+
+    function bind() {
+      var e;
+      e = document.getElementById('batchInput'); if (e) e.oninput = function(ev) { state.batchName = ev.target.value; };
+      e = document.getElementById('backendInput'); if (e) e.oninput = function(ev) { state.backendUrl = ev.target.value.trim(); state.accountsLoaded = false; state.availableAccounts = []; state.accountsError = null; };
+      e = document.getElementById('accountSelect'); if (e) e.onchange = function(ev) { state.accountId = ev.target.value; };
+      e = document.getElementById('accountInput'); if (e) e.oninput = function(ev) { state.accountId = ev.target.value.trim(); };
+      e = document.getElementById('loadAccBtn'); if (e) e.onclick = function() { loadAccounts(false); };
+      e = document.getElementById('testBtn'); if (e) e.onclick = testConn;
+      e = document.getElementById('headerInput'); if (e) e.oninput = function(ev) { state.headerHeight = ev.target.value; };
+      e = document.getElementById('footerInput'); if (e) e.oninput = function(ev) { state.footerHeight = ev.target.value; };
+      e = document.getElementById('sliceInput'); if (e) e.oninput = function(ev) { state.maxSliceHeight = ev.target.value; };
+      e = document.getElementById('lockBtn'); if (e) e.onclick = function() { parent.postMessage({ pluginMessage: { type: 'lock-frame' } }, '*'); };
+      e = document.getElementById('unlockBtn'); if (e) e.onclick = function() { parent.postMessage({ pluginMessage: { type: 'unlock-frame' } }, '*'); };
+      e = document.getElementById('refreshBtn2'); if (e) e.onclick = function() { reset(); setStatus('Refreshed.', 'success'); parent.postMessage({ pluginMessage: { type: 'refresh' } }, '*'); };
+      e = document.getElementById('loadPreviewBtn'); if (e) e.onclick = function() { setStatus('Loading...', 'loading'); parent.postMessage({ pluginMessage: { type: 'preview' } }, '*'); };
+      e = document.getElementById('autoBtn'); if (e) e.onclick = function() { setStatus('Generating...', 'loading'); parent.postMessage({ pluginMessage: { type: 'auto-suggest', headerHeight: Number(state.headerHeight||0), footerHeight: Number(state.footerHeight||0), maxSliceHeight: Number(state.maxSliceHeight||0) } }, '*'); };
+      e = document.getElementById('addSliceBtn'); if (e) e.onclick = function() { state.addSliceMode = !state.addSliceMode; render(); };
+      e = document.getElementById('clearBtn'); if (e) e.onclick = function() { state.slices = []; state.selectedSliceIndex = -1; state.addSliceMode = false; render(); };
+      var items = document.querySelectorAll('.slice-item'); for (var i = 0; i < items.length; i++) items[i].onclick = function(ev) { state.selectedSliceIndex = Number(ev.currentTarget.getAttribute('data-idx')); render(); };
+      function updateInputs() { var s = getSelected(); if (!s) return; var nr = { x: Number(document.getElementById('sliceX').value), y: Number(document.getElementById('sliceY').value), width: Number(document.getElementById('sliceW').value), height: Number(document.getElementById('sliceH').value) }; s.rect = constrain(nr, state.selectedSliceIndex, s.rect); render(); }
+      ['sliceX','sliceY','sliceW','sliceH'].forEach(function(id) { e = document.getElementById(id); if (e) e.onchange = updateInputs; });
+      e = document.getElementById('cloneBtn'); if (e) e.onclick = cloneSlice;
+      e = document.getElementById('removeBtn'); if (e) e.onclick = function() { if (state.selectedSliceIndex < 0) return; state.slices.splice(state.selectedSliceIndex, 1); state.selectedSliceIndex = state.slices.length ? Math.min(state.selectedSliceIndex, state.slices.length - 1) : -1; render(); };
+      e = document.getElementById('clearAllBtn'); if (e) e.onclick = function() { state.slices = []; state.selectedSliceIndex = -1; render(); };
+      e = document.getElementById('pushBtn'); if (e) e.onclick = function() { if (!state.backendUrl) return setStatus('Backend URL required.', 'error'); if (!state.batchName && state.frame) state.batchName = state.frame.name; if (!state.batchName) return setStatus('Batch name required.', 'error'); if (!state.slices.length) return setStatus('Add slices first.', 'error'); setStatus('Exporting...', 'loading'); parent.postMessage({ pluginMessage: { type: 'export', manualSlices: state.slices } }, '*'); };
+    }
+
+    function setupOverlay() {
+      var img = document.getElementById('previewImg'), canvas = document.getElementById('overlay');
+      if (!img || !canvas) return;
+      var rect = img.getBoundingClientRect(), dw = rect.width, dh = rect.height;
+      if (dw <= 0 || dh <= 0) return;
+      canvas.width = dw; canvas.height = dh;
+      var scaleX = dw / state.preview.width, scaleY = dh / state.preview.height;
+      var ctx = canvas.getContext('2d');
+      function toC(lx, ly) { return { x: lx * scaleX, y: ly * scaleY }; }
+      function toL(cx, cy) { return { x: Math.round(cx / scaleX), y: Math.round(cy / scaleY) }; }
+      function getP(ev) { var r = canvas.getBoundingClientRect(); return { x: ev.clientX - r.left, y: ev.clientY - r.top }; }
+      function hit(lx, ly) { for (var i = state.slices.length - 1; i >= 0; i--) { var r = state.slices[i].rect; if (lx >= r.x && lx < r.x + r.width && ly >= r.y && ly < r.y + r.height) return i; } return -1; }
+      function getH(sl) { var r = sl.rect, tl = toC(r.x, r.y), br = toC(r.x + r.width, r.y + r.height); return [{ n:'tl', x:tl.x, y:tl.y, c:'nwse-resize' }, { n:'tr', x:br.x, y:tl.y, c:'nesw-resize' }, { n:'bl', x:tl.x, y:br.y, c:'nesw-resize' }, { n:'br', x:br.x, y:br.y, c:'nwse-resize' }]; }
+      function findH(cp) { if (state.selectedSliceIndex < 0) return null; var s = state.slices[state.selectedSliceIndex]; if (!s) return null; var hs = getH(s); for (var i = 0; i < hs.length; i++) { var dx = cp.x - hs[i].x, dy = cp.y - hs[i].y; if (Math.sqrt(dx*dx+dy*dy) <= HANDLE_HIT) return hs[i]; } return null; }
+      function redraw() {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        for (var i = 0; i < state.slices.length; i++) {
+          var r = state.slices[i].rect, tl = toC(r.x, r.y), br = toC(r.x + r.width, r.y + r.height), w = br.x - tl.x, h = br.y - tl.y, act = (i === state.selectedSliceIndex);
+          ctx.fillStyle = act ? 'rgba(245,158,11,0.3)' : 'rgba(79,70,229,0.2)';
+          ctx.fillRect(tl.x, tl.y, w, h);
+          ctx.strokeStyle = act ? '#f59e0b' : '#4f46e5';
+          ctx.lineWidth = act ? 2 : 1.5;
+          ctx.strokeRect(tl.x, tl.y, w, h);
+          ctx.fillStyle = act ? '#92400e' : '#312e81';
+          ctx.font = 'bold 11px Inter, sans-serif';
+          ctx.fillText(String(i + 1), tl.x + 4, tl.y + 13);
+          if (act) { var hs = getH(state.slices[i]); for (var j = 0; j < hs.length; j++) { ctx.beginPath(); ctx.arc(hs[j].x, hs[j].y, HANDLE_R, 0, Math.PI * 2); ctx.fillStyle = '#fff'; ctx.fill(); ctx.strokeStyle = '#f59e0b'; ctx.lineWidth = 2; ctx.stroke(); } }
+        }
+        if (draw.active) { var x = Math.min(draw.startX, draw.currentX), y = Math.min(draw.startY, draw.currentY), w = Math.abs(draw.currentX - draw.startX), h = Math.abs(draw.currentY - draw.startY); ctx.fillStyle = 'rgba(16,185,129,0.25)'; ctx.fillRect(x, y, w, h); ctx.setLineDash([4,4]); ctx.strokeStyle = '#10b981'; ctx.lineWidth = 2; ctx.strokeRect(x, y, w, h); ctx.setLineDash([]); }
+      }
+      function upCur(cp) { if (state.addSliceMode) { canvas.style.cursor = 'crosshair'; return; } var h = findH(cp); if (h) { canvas.style.cursor = h.c; return; } var lp = toL(cp.x, cp.y), idx = hit(lp.x, lp.y); canvas.style.cursor = (idx >= 0 && idx === state.selectedSliceIndex) ? 'move' : (idx >= 0 ? 'pointer' : 'default'); }
+      canvas.onpointerdown = function(ev) {
+        ev.preventDefault(); var cp = getP(ev);
+        if (state.addSliceMode) { draw.active = true; draw.startX = draw.currentX = cp.x; draw.startY = draw.currentY = cp.y; draw.pointerId = ev.pointerId; canvas.setPointerCapture(ev.pointerId); return; }
+        var h = findH(cp);
+        if (h && state.selectedSliceIndex >= 0) { var s = state.slices[state.selectedSliceIndex]; resize.active = true; resize.handle = h.n; resize.startRect = { x: s.rect.x, y: s.rect.y, width: s.rect.width, height: s.rect.height }; resize.pointerId = ev.pointerId; canvas.setPointerCapture(ev.pointerId); canvas.style.cursor = h.c; return; }
+        var lp = toL(cp.x, cp.y), idx = hit(lp.x, lp.y);
+        if (idx >= 0) { if (state.selectedSliceIndex !== idx) { state.selectedSliceIndex = idx; render(); return; } move.active = true; move.pointerId = ev.pointerId; move.lastLogicalX = lp.x; move.lastLogicalY = lp.y; canvas.setPointerCapture(ev.pointerId); canvas.style.cursor = 'move'; }
+        else if (state.selectedSliceIndex !== -1) { state.selectedSliceIndex = -1; redraw(); }
+      };
+      canvas.onpointermove = function(ev) {
+        var cp = getP(ev);
+        if (!draw.active && !resize.active && !move.active) upCur(cp);
+        if (resize.active && state.selectedSliceIndex >= 0) {
+          var lp = toL(cp.x, cp.y), sr = resize.startRect, nr = { x: sr.x, y: sr.y, width: sr.width, height: sr.height };
+          switch (resize.handle) {
+            case 'tl': nr.width = sr.x + sr.width - lp.x; nr.height = sr.y + sr.height - lp.y; nr.x = lp.x; nr.y = lp.y; break;
+            case 'tr': nr.width = lp.x - sr.x; nr.height = sr.y + sr.height - lp.y; nr.y = lp.y; break;
+            case 'bl': nr.width = sr.x + sr.width - lp.x; nr.height = lp.y - sr.y; nr.x = lp.x; break;
+            case 'br': nr.width = lp.x - sr.x; nr.height = lp.y - sr.y; break;
+          }
+          var prevRect = state.slices[state.selectedSliceIndex].rect;
+          state.slices[state.selectedSliceIndex].rect = constrain(nr, state.selectedSliceIndex, prevRect);
+          redraw(); return;
+        }
+        if (move.active && state.selectedSliceIndex >= 0) {
+          var lp = toL(cp.x, cp.y);
+          var dx = lp.x - move.lastLogicalX;
+          var dy = lp.y - move.lastLogicalY;
+          var cur = state.slices[state.selectedSliceIndex].rect;
+          state.slices[state.selectedSliceIndex].rect = moveRect(cur, cur.x + dx, cur.y + dy, state.selectedSliceIndex);
+          move.lastLogicalX = lp.x;
+          move.lastLogicalY = lp.y;
+          redraw();
+          return;
+        }
+        if (draw.active) { draw.currentX = cp.x; draw.currentY = cp.y; redraw(); }
+      };
+      canvas.onpointerup = function(ev) {
+        if (move.active) { try { canvas.releasePointerCapture(move.pointerId); } catch(e) {} move.active = false; render(); return; }
+        if (resize.active) { try { canvas.releasePointerCapture(resize.pointerId); } catch(e) {} resize.active = false; render(); return; }
+        if (draw.active) {
+          var cp = getP(ev); draw.currentX = cp.x; draw.currentY = cp.y;
+          try { canvas.releasePointerCapture(draw.pointerId); } catch(e) {} draw.active = false;
+          var x = Math.min(draw.startX, draw.currentX), y = Math.min(draw.startY, draw.currentY), w = Math.abs(draw.currentX - draw.startX), h = Math.abs(draw.currentY - draw.startY);
+          if (w >= 10 && h >= 10) {
+            var tl = toL(x, y), br = toL(x + w, y + h), nr = normalize({ x: tl.x, y: tl.y, width: br.x - tl.x, height: br.y - tl.y });
+            if (!wouldOverlap(nr, -1)) { state.slices.push({ rect: nr, url: '', label: '', alt: '' }); state.selectedSliceIndex = state.slices.length - 1; state.addSliceMode = false; setStatus('Slice added.', 'success'); }
+            else { setStatus('Cannot add: overlaps existing slice.', 'error'); redraw(); }
+          } else redraw();
+        }
+      };
+      canvas.onpointercancel = function() { move.active = resize.active = draw.active = false; redraw(); };
+      if (teardown) teardown();
+      function onDoc(ev) { var wrap = document.getElementById('previewWrap'), side = document.querySelector('.side'); if (wrap && wrap.contains(ev.target)) return; if (side && side.contains(ev.target)) return; if (state.addSliceMode || state.selectedSliceIndex !== -1) { state.addSliceMode = false; state.selectedSliceIndex = -1; render(); } }
+      document.addEventListener('pointerdown', onDoc, true);
+      teardown = function() { document.removeEventListener('pointerdown', onDoc, true); };
+      redraw();
+    }
+
+    function testConn() {
+      if (!state.backendUrl) return setStatus('Enter backend URL first.', 'error');
+      var url = state.backendUrl.replace(/\/$/, '') + '/health';
+      setStatus('Testing: ' + url, 'loading');
+      fetch(url, { mode: 'cors' }).then(function(r) { return r.ok ? r.json() : Promise.reject('HTTP ' + r.status); }).then(function(d) { setStatus('✓ Connected! ' + JSON.stringify(d), 'success'); }).catch(function(e) { var m = String(e.message || e); if (m.includes('fetch') || m.includes('network')) m = 'Network error - Check: 1) URL is correct, 2) Backend is running, 3) Backend has CORS enabled. Backend needs: app.use(cors()) with cors npm package.'; setStatus('Connection failed: ' + m, 'error'); });
+    }
+
+    function loadAccounts(silent) {
+      if (!state.backendUrl) { if (!silent) setStatus('Enter backend URL first.', 'error'); return; }
+      var url = state.backendUrl.replace(/\/$/, '') + '/api/accounts';
+      if (!silent) setStatus('Loading accounts...', 'loading');
+      fetch(url, { mode: 'cors' }).then(function(r) { return r.ok ? r.json() : r.text().then(function(t) { throw new Error(t); }); }).then(function(j) {
+        var raw = Array.isArray(j.accounts) ? j.accounts : [];
+        state.availableAccounts = raw.map(function(a) { return typeof a === 'string' ? { id: a, name: a } : { id: String(a.id), name: String(a.name || a.id) }; });
+        state.accountsLoaded = true; state.accountsError = null;
+        if (state.availableAccounts.length && !state.availableAccounts.some(function(a) { return a.id === state.accountId; })) state.accountId = state.availableAccounts[0].id;
+        if (!silent) setStatus('✓ Loaded ' + state.availableAccounts.length + ' account(s)', 'success'); else render();
+      }).catch(function(e) { state.availableAccounts = []; state.accountsLoaded = false; var m = String(e.message || e); if (m.includes('fetch')) m = 'Network/CORS error. Add cors to backend.'; state.accountsError = m; if (!silent) setStatus('Failed: ' + m, 'error'); else render(); });
+    }
+
+    function pushViaBackend(data) {
+      return fetch(state.backendUrl.replace(/\/$/, '') + '/api/push', { method: 'POST', mode: 'cors', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ accountId: state.accountId || 'default', batchName: state.batchName || data.name, imageBase64: data.base64, logicalWidth: data.logicalWidth, logicalHeight: data.logicalHeight, pixelRatio: data.pixelRatio, exportWidth: data.exportWidth, exportHeight: data.exportHeight, headerHeight: Number(state.headerHeight || 0), footerHeight: Number(state.footerHeight || 0), maxSliceHeight: Number(state.maxSliceHeight || 1200), manualSlices: data.manualSlices || [], frameName: data.name }) }).then(function(r) { return r.json().then(function(j) { if (!r.ok) throw new Error(j.error || 'Failed'); return j; }); });
+    }
+
+    function setStatus(m, t) { state.status = m; state.statusType = t; render(); }
+
+    window.onmessage = function(ev) {
+      var msg = ev.data.pluginMessage; if (!msg) return;
+      if (msg.type === 'update') { state.frame = msg.frame || null; state.errorMsg = msg.error || null; state.locked = !!msg.locked; if (state.frame && !state.batchName) state.batchName = state.frame.name; if (!state.frame) reset(); state.status = ''; state.statusType = ''; render(); }
+      if (msg.type === 'preview-error') setStatus(msg.message || 'Preview failed', 'error');
+      if (msg.type === 'suggest-error') setStatus(msg.message || 'Suggest failed', 'error');
+      if (msg.type === 'export-error') setStatus(msg.message || 'Export failed', 'error');
+      if (msg.type === 'preview-done') { state.preview.ready = true; state.preview.base64 = msg.base64; state.preview.width = msg.logicalWidth; state.preview.height = msg.logicalHeight; setStatus('Preview loaded.', 'success'); }
+      if (msg.type === 'suggest-done') { state.slices = Array.isArray(msg.slices) ? msg.slices : []; state.selectedSliceIndex = state.slices.length ? 0 : -1; state.addSliceMode = false; setStatus(state.slices.length + ' slice(s) suggested.', 'success'); }
+      if (msg.type === 'export-done') { setStatus('Uploading...', 'loading'); pushViaBackend(msg).then(function(r) { var orig = 0, comp = 0; r.slices.forEach(function(s) { orig += s.originalKb || 0; comp += s.compressedKb || 0; }); setStatus('✓ Uploaded ' + r.sliceCount + ' slice(s) | ' + Math.round(orig) + 'KB → ' + Math.round(comp) + 'KB', 'success'); parent.postMessage({ pluginMessage: { type: 'notify', message: 'Done!' } }, '*'); }).catch(function(e) { setStatus('Upload failed: ' + (e.message || e), 'error'); }); }
+    };
+
+    render();
+    setTimeout(function() { if (state.backendUrl) loadAccounts(true); }, 500);
+  </script>
+</body>
+</html>
