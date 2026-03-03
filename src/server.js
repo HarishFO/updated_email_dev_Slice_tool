@@ -4,7 +4,10 @@ import sharp from 'sharp';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-const TARGET_SLICE_KB = Math.max(80, Number(process.env.TARGET_SLICE_KB || 250));
+const SLICE_TARGET_KB = Math.max(80, Number(process.env.SLICE_TARGET_KB || process.env.TARGET_SLICE_KB || 250));
+const SLICE_JPEG_QUALITY = Math.min(95, Math.max(55, Number(process.env.SLICE_JPEG_QUALITY || 80)));
+const SLICE_MIN_JPEG_QUALITY = Math.min(SLICE_JPEG_QUALITY, Math.max(45, Number(process.env.SLICE_MIN_JPEG_QUALITY || 60)));
+const SLICE_ALLOW_DOWNSCALE = String(process.env.SLICE_ALLOW_DOWNSCALE || 'false').toLowerCase() === 'true';
 
 app.use(cors());
 app.options('*', cors());
@@ -112,7 +115,7 @@ app.post('/api/push', async (req, res) => {
       let sliceBuffer = await sharp(imageBuffer).extract({ left: x, top: y, width: w, height: h }).toBuffer();
       const originalKb = sliceBuffer.length / 1024;
       
-      const compressed = await compressForEmail(sliceBuffer, TARGET_SLICE_KB);
+      const compressed = await compressForEmail(sliceBuffer, SLICE_TARGET_KB);
       const finalBuffer = compressed.buffer;
       const mimeType = compressed.mimeType;
       const jpegQuality = compressed.jpegQuality;
@@ -132,18 +135,51 @@ app.post('/api/push', async (req, res) => {
 
 async function compressForEmail(sliceBuffer, targetKb) {
   const originalMeta = await sharp(sliceBuffer).metadata();
+  const hasAlpha = originalMeta.hasAlpha === true || originalMeta.channels === 4;
   let width = originalMeta.width || 0;
   let height = originalMeta.height || 0;
-  let quality = 82;
+  let quality = SLICE_JPEG_QUALITY;
 
-  // Email clients generally don't need alpha; flattening enables strong JPEG compression.
+  if (hasAlpha) {
+    let pngQuality = 90;
+    let finalPng = await sharp(sliceBuffer)
+      .rotate()
+      .png({ compressionLevel: 9, palette: true, quality: pngQuality, effort: 10 })
+      .toBuffer();
+
+    while (finalPng.length / 1024 > targetKb && pngQuality > 55) {
+      pngQuality -= 7;
+      finalPng = await sharp(sliceBuffer)
+        .rotate()
+        .png({ compressionLevel: 9, palette: true, quality: pngQuality, effort: 10 })
+        .toBuffer();
+    }
+
+    while (SLICE_ALLOW_DOWNSCALE && finalPng.length / 1024 > targetKb && width > 600 && height > 100) {
+      width = Math.round(width * 0.92);
+      height = Math.round(height * 0.92);
+      finalPng = await sharp(sliceBuffer)
+        .rotate()
+        .resize({ width, height, fit: 'fill' })
+        .png({ compressionLevel: 9, palette: true, quality: Math.max(55, pngQuality), effort: 10 })
+        .toBuffer();
+    }
+
+    return {
+      buffer: finalPng,
+      mimeType: 'image/png',
+      jpegQuality: null
+    };
+  }
+
+  // For non-alpha slices, aggressive JPEG compression gives best size reduction.
   let finalBuffer = await sharp(sliceBuffer)
     .rotate()
     .flatten({ background: '#ffffff' })
     .jpeg({ quality, mozjpeg: true, progressive: true, chromaSubsampling: '4:2:0' })
     .toBuffer();
 
-  while (finalBuffer.length / 1024 > targetKb && quality > 35) {
+  while (finalBuffer.length / 1024 > targetKb && quality > SLICE_MIN_JPEG_QUALITY) {
     quality -= 7;
     finalBuffer = await sharp(sliceBuffer)
       .rotate()
@@ -152,14 +188,14 @@ async function compressForEmail(sliceBuffer, targetKb) {
       .toBuffer();
   }
 
-  while (finalBuffer.length / 1024 > targetKb && width > 600 && height > 100) {
+  while (SLICE_ALLOW_DOWNSCALE && finalBuffer.length / 1024 > targetKb && width > 600 && height > 100) {
     width = Math.round(width * 0.9);
     height = Math.round(height * 0.9);
     finalBuffer = await sharp(sliceBuffer)
       .rotate()
       .resize({ width, height, fit: 'fill' })
       .flatten({ background: '#ffffff' })
-      .jpeg({ quality: Math.max(35, quality), mozjpeg: true, progressive: true, chromaSubsampling: '4:2:0' })
+      .jpeg({ quality: Math.max(SLICE_MIN_JPEG_QUALITY, quality), mozjpeg: true, progressive: true, chromaSubsampling: '4:2:0' })
       .toBuffer();
   }
 
