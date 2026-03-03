@@ -86,7 +86,8 @@ function suggestSlices(frameNode, opts) {
 
   var headerHeight = clamp(toInt(opts && opts.headerHeight, 0), 0, frameHeight);
   var footerHeight = clamp(toInt(opts && opts.footerHeight, 0), 0, frameHeight);
-  var fixedSliceHeight = 300;
+  var rawHeight = toInt(opts && opts.maxSliceHeight, 300);
+  var fixedSliceHeight = rawHeight > 0 ? rawHeight : 300;
 
   var bodyTop = headerHeight;
   var bodyBottom = frameHeight - footerHeight;
