@@ -1,7 +1,6 @@
 import express from 'express';
 import cors from 'cors';
 import sharp from 'sharp';
-import FormData from 'form-data';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -147,11 +146,16 @@ app.post('/api/push', async (req, res) => {
 async function uploadToKlaviyo(apiKey, imageBuffer, mimeType, filename) {
   const ext = mimeType === 'image/png' ? 'png' : 'jpg';
   const form = new FormData();
-  form.append('file', imageBuffer, { filename: `${filename}.${ext}`, contentType: mimeType });
+  const blob = new Blob([imageBuffer], { type: mimeType });
+  form.append('file', blob, `${filename}.${ext}`);
 
-  const response = await fetch('https://a.klaviyo.com/api/images/', {
+  const response = await fetch('https://a.klaviyo.com/api/image-upload', {
     method: 'POST',
-    headers: { 'Authorization': `Klaviyo-API-Key ${apiKey}`, 'revision': '2024-02-15', ...form.getHeaders() },
+    headers: {
+      'Authorization': `Klaviyo-API-Key ${apiKey}`,
+      'revision': '2026-01-15',
+      'Accept': 'application/vnd.api+json'
+    },
     body: form
   });
 
