@@ -78,109 +78,34 @@ function toInt(n, fallback) {
   return fallback;
 }
 
-function mergeIntervals(intervals, joinGap) {
-  if (!intervals.length) return [];
-  intervals.sort(function(a, b) { return a.start - b.start; });
-
-  var merged = [intervals[0]];
-  for (var i = 1; i < intervals.length; i++) {
-    var prev = merged[merged.length - 1];
-    var cur = intervals[i];
-    if (cur.start <= prev.end + joinGap) {
-      prev.end = Math.max(prev.end, cur.end);
-    } else {
-      merged.push(cur);
-    }
-  }
-  return merged;
-}
-
-function splitByMaxHeight(interval, maxH) {
-  var out = [];
-  var y = interval.start;
-  while (y < interval.end) {
-    var h = Math.min(maxH, interval.end - y);
-    out.push({ start: y, end: y + h });
-    y += h;
-  }
-  return out;
-}
-
 function suggestSlices(frameNode, opts) {
-  var frameBounds = getBounds(frameNode);
-  if (!frameBounds) return [];
+  if (!getBounds(frameNode)) return [];
 
   var frameWidth = Math.round(frameNode.width);
   var frameHeight = Math.round(frameNode.height);
 
   var headerHeight = clamp(toInt(opts && opts.headerHeight, 0), 0, frameHeight);
   var footerHeight = clamp(toInt(opts && opts.footerHeight, 0), 0, frameHeight);
-  var maxSliceHeight = Math.max(200, toInt(opts && opts.maxSliceHeight, 1200));
+  var fixedSliceHeight = 300;
 
   var bodyTop = headerHeight;
   var bodyBottom = frameHeight - footerHeight;
   if (bodyBottom <= bodyTop) return [];
 
-  var minSectionHeight = Math.max(40, Math.round(frameHeight * 0.03));
-  var minWidth = Math.max(120, Math.round(frameWidth * 0.55));
-  var joinGap = Math.max(12, Math.round(frameHeight * 0.01));
-
-  var intervals = [];
-  if ("children" in frameNode && Array.isArray(frameNode.children)) {
-    for (var i = 0; i < frameNode.children.length; i++) {
-      var child = frameNode.children[i];
-      if (!child || child.visible === false) continue;
-
-      var b = getBounds(child);
-      if (!b) continue;
-
-      var relY = Math.round(b.y - frameBounds.y);
-      var relH = Math.round(b.height);
-      var relW = Math.round(b.width);
-
-      if (relW < minWidth) continue;
-      if (relH < minSectionHeight) continue;
-
-      var start = clamp(relY, bodyTop, bodyBottom);
-      var end = clamp(relY + relH, bodyTop, bodyBottom);
-      if (end - start < minSectionHeight) continue;
-
-      intervals.push({ start: start, end: end });
-    }
-  }
-
-  if (!intervals.length) {
-    intervals.push({ start: bodyTop, end: bodyBottom });
-  }
-
-  var merged = mergeIntervals(intervals, joinGap);
-
   var slices = [];
-  for (var m = 0; m < merged.length; m++) {
-    var chunks = splitByMaxHeight(merged[m], maxSliceHeight);
-    for (var c = 0; c < chunks.length; c++) {
-      var h = chunks[c].end - chunks[c].start;
-      if (h < 8) continue;
-      slices.push({
-        rect: {
-          x: 0,
-          y: chunks[c].start,
-          width: frameWidth,
-          height: h
-        },
-        url: "",
-        alt: "",
-        label: ""
-      });
-    }
+  var y = bodyTop;
+  while (y + fixedSliceHeight <= bodyBottom) {
+    slices.push({ rect: { x: 0, y: y, width: frameWidth, height: fixedSliceHeight }, url: "", alt: "", label: "" });
+    y += fixedSliceHeight;
   }
 
-  if (!slices.length) {
-    var y = bodyTop;
-    while (y < bodyBottom) {
-      var h2 = Math.min(maxSliceHeight, bodyBottom - y);
-      slices.push({ rect: { x: 0, y: y, width: frameWidth, height: h2 }, url: "", alt: "", label: "" });
-      y += h2;
+  // Keep slices contiguous and avoid tiny middle segments; remainder is appended to the last slice.
+  if (y < bodyBottom) {
+    var rem = bodyBottom - y;
+    if (slices.length === 0) {
+      slices.push({ rect: { x: 0, y: bodyTop, width: frameWidth, height: bodyBottom - bodyTop }, url: "", alt: "", label: "" });
+    } else {
+      slices[slices.length - 1].rect.height += rem;
     }
   }
 
