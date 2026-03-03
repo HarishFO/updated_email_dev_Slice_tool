@@ -4,6 +4,7 @@ import sharp from 'sharp';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+const TARGET_SLICE_KB = Math.max(80, Number(process.env.TARGET_SLICE_KB || 250));
 
 app.use(cors());
 app.options('*', cors());
@@ -111,24 +112,10 @@ app.post('/api/push', async (req, res) => {
       let sliceBuffer = await sharp(imageBuffer).extract({ left: x, top: y, width: w, height: h }).toBuffer();
       const originalKb = sliceBuffer.length / 1024;
       
-      const sliceMeta = await sharp(sliceBuffer).metadata();
-      const hasAlpha = sliceMeta.channels === 4;
-      
-      let finalBuffer, mimeType, jpegQuality = null;
-      
-      if (hasAlpha) {
-        finalBuffer = await sharp(sliceBuffer).png({ compressionLevel: 9 }).toBuffer();
-        mimeType = 'image/png';
-      } else {
-        let quality = 85;
-        finalBuffer = await sharp(sliceBuffer).jpeg({ quality }).toBuffer();
-        while (finalBuffer.length / 1024 > 200 && quality > 50) {
-          quality -= 5;
-          finalBuffer = await sharp(sliceBuffer).jpeg({ quality }).toBuffer();
-        }
-        mimeType = 'image/jpeg';
-        jpegQuality = quality;
-      }
+      const compressed = await compressForEmail(sliceBuffer, TARGET_SLICE_KB);
+      const finalBuffer = compressed.buffer;
+      const mimeType = compressed.mimeType;
+      const jpegQuality = compressed.jpegQuality;
       
       const compressedKb = finalBuffer.length / 1024;
       const uploadResult = await uploadToKlaviyo(apiKey, finalBuffer, mimeType, `${safeBatchName}_slice_${i + 1}`);
@@ -142,6 +129,46 @@ app.post('/api/push', async (req, res) => {
     res.status(500).json({ ok: false, error: err.message });
   }
 });
+
+async function compressForEmail(sliceBuffer, targetKb) {
+  const originalMeta = await sharp(sliceBuffer).metadata();
+  let width = originalMeta.width || 0;
+  let height = originalMeta.height || 0;
+  let quality = 82;
+
+  // Email clients generally don't need alpha; flattening enables strong JPEG compression.
+  let finalBuffer = await sharp(sliceBuffer)
+    .rotate()
+    .flatten({ background: '#ffffff' })
+    .jpeg({ quality, mozjpeg: true, progressive: true, chromaSubsampling: '4:2:0' })
+    .toBuffer();
+
+  while (finalBuffer.length / 1024 > targetKb && quality > 35) {
+    quality -= 7;
+    finalBuffer = await sharp(sliceBuffer)
+      .rotate()
+      .flatten({ background: '#ffffff' })
+      .jpeg({ quality, mozjpeg: true, progressive: true, chromaSubsampling: '4:2:0' })
+      .toBuffer();
+  }
+
+  while (finalBuffer.length / 1024 > targetKb && width > 600 && height > 100) {
+    width = Math.round(width * 0.9);
+    height = Math.round(height * 0.9);
+    finalBuffer = await sharp(sliceBuffer)
+      .rotate()
+      .resize({ width, height, fit: 'fill' })
+      .flatten({ background: '#ffffff' })
+      .jpeg({ quality: Math.max(35, quality), mozjpeg: true, progressive: true, chromaSubsampling: '4:2:0' })
+      .toBuffer();
+  }
+
+  return {
+    buffer: finalBuffer,
+    mimeType: 'image/jpeg',
+    jpegQuality: quality
+  };
+}
 
 async function uploadToKlaviyo(apiKey, imageBuffer, mimeType, filename) {
   const ext = mimeType === 'image/png' ? 'png' : 'jpg';
